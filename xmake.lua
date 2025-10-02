@@ -5,9 +5,9 @@ add_repositories("liteldev-repo https://github.com/LiteLDev/xmake-repo.git")
 -- add_requires("levilamina x.x.x") for a specific version
 -- add_requires("levilamina develop") to use develop version
 -- please note that you should add bdslibrary yourself if using dev version
-add_requires("levilamina 1.3.0")
+add_requires("levilamina 1.5.1")
 add_requires("levibuildscript")
-add_requires("boost 1.87.0", {configs = {asio = true, cmake = false}})
+add_requires("boost 1.87.0", {configs = {asio = true}})
 
 if not has_config("vs_runtime") then
     set_runtimes("MD")

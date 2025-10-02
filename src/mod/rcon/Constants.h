@@ -3,6 +3,7 @@
 namespace rcon_server::rcon {
 
 constexpr int MIN_PACKET_SIZE = 10;
+constexpr int MAX_PACKET_SIZE = 4096;
 
 // See https://developer.valvesoftware.com/wiki/Source_RCON_Protocol#Requests_and_Responses
 enum DataType {

@@ -1,6 +1,14 @@
 #include "Server.h"
 #include "Constants.h"
 #include "utils/Utils.h"
+#include <format>
+
+#define CALL_HANDLER(handler, ...)                                                                                     \
+    {                                                                                                                  \
+        if ((handler)) {                                                                                               \
+            (handler)(__VA_ARGS__);                                                                                    \
+        }                                                                                                              \
+    }
 
 namespace rcon_server::rcon {
 
@@ -13,6 +21,7 @@ void Server::stop() {
     acceptor.close();
     ioContext.stop();
 
+    std::lock_guard<std::mutex> guard(clientsMutex);
     clients.clear();
 }
 
@@ -25,7 +34,7 @@ void Server::startAccepting() {
             if (clients.size() <= maxConnections) {
                 std::shared_ptr<ConnectedClient> client = std::make_shared<ConnectedClient>(socket, false);
 
-                onNewConnection(client);
+                CALL_HANDLER(onNewConnection, client);
 
                 clients[socket.get()] = client;
                 readPacket(client);
@@ -39,43 +48,80 @@ void Server::startAccepting() {
 }
 
 void Server::readPacket(std::shared_ptr<ConnectedClient> client) {
-    auto buffer = std::make_shared<std::vector<char>>(4096);
+    auto buffer = std::make_shared<std::vector<char>>(sizeof(int));
 
-    client->socket->async_read_some(
+    boost::asio::async_read(
+        *client->socket,
         boost::asio::buffer(*buffer),
-        [this, client, buffer](boost::system::error_code ec, [[maybe_unused]] size_t length) -> void {
-            onDebugInfo(client, "[Server::readPacket] New packet. Length: " + std::to_string(length));
+        [this, client, buffer](boost::system::error_code ec, size_t) -> void {
+            CALL_HANDLER(onDebugInfo, client, "[Server::readPacket] New packet.");
 
             if (!ec) {
-                std::stringstream ss;
-                for (size_t i = 0; i < length; ++i) {
-                    ss << std::hex << static_cast<int>((*buffer)[i]) << " ";
-                }
-                onDebugInfo(client, "[Server::readPacket] Raw packet data: " + ss.str());
+                int sizeOfPacket = utils::Utils::bit32ToInt(*buffer);
+                CALL_HANDLER(onDebugInfo, client, std::format("[Server::readPacket] Size of packet: {}", sizeOfPacket));
 
-                size_t sizeOfPacket = utils::Utils::bit32ToInt(*buffer);
-                onDebugInfo(client, "[Server::readPacket] Size of Packet: " + std::to_string(sizeOfPacket));
+                if (sizeOfPacket <= MIN_PACKET_SIZE || sizeOfPacket > MAX_PACKET_SIZE) {
+                    CALL_HANDLER(onDebugInfo, client, "[Server::readPacket] Invalid packet");
 
-                if (sizeOfPacket <= MIN_PACKET_SIZE) {
-                    onDebugInfo(client, "[Server::readPacket] Invalid Packet");
                     readPacket(client);
-                } else {
-                    onDebugInfo(client, "[Server::readPacket] Correct Packet. Processing...");
-
-                    buffer->erase(buffer->begin(), buffer->begin() + 4);
-                    buffer->resize(sizeOfPacket);
-
-                    processPacket(client, *buffer);
-                }
-            } else {
-                onClientDisconnect(client);
-                if (ec != boost::asio::error::eof) {
-                    onDebugInfo(client, "[Server::readPacket] Error occurred: " + ec.message());
+                    return;
                 }
 
-                std::lock_guard<std::mutex> guard(clientsMutex);
-                clients.erase(client->socket.get());
+                CALL_HANDLER(onDebugInfo, client, "[Server::readPacket] Correct packet. Read Packet body...");
+
+                readPacketBody(client, sizeOfPacket);
+                return;
             }
+
+            CALL_HANDLER(onClientDisconnect, client);
+            if (ec != boost::asio::error::eof) {
+                CALL_HANDLER(onDebugInfo, client, std::format("[Server::readPacket] Error occurred: {}", ec.message()));
+            }
+
+            std::lock_guard<std::mutex> guard(clientsMutex);
+            clients.erase(client->socket.get());
+        }
+    );
+}
+
+void Server::readPacketBody(std::shared_ptr<ConnectedClient> client, int packetSize) {
+    auto buffer = std::make_shared<std::vector<char>>(packetSize);
+
+    boost::asio::async_read(
+        *client->socket,
+        boost::asio::buffer(*buffer),
+        [this, client, buffer, packetSize](boost::system::error_code ec, size_t) -> void {
+            CALL_HANDLER(
+                onDebugInfo,
+                client,
+                std::format("[Server::readPacket] Reading packet body. Size: {}", packetSize)
+            );
+
+            if (!ec) {
+                if (onDebugInfo) {
+                    std::ostringstream oss;
+                    oss << std::hex << std::uppercase << std::setfill('0');
+
+                    for (int i = 0; i < packetSize; ++i) {
+                        oss << "\\x" << std::setw(2) << static_cast<int>((*buffer)[i]);
+                    }
+
+                    onDebugInfo(client, std::format("[Server::readPacket] Raw packet data: {}", oss.str()));
+                }
+
+                CALL_HANDLER(onDebugInfo, client, "[Server::readPacket] Correct packet. Processing...");
+
+                processPacket(client, *buffer);
+                return;
+            }
+
+            CALL_HANDLER(onClientDisconnect, client);
+            if (ec != boost::asio::error::eof) {
+                CALL_HANDLER(onDebugInfo, client, std::format("[Server::readPacket] Error occurred: {}", ec.message()));
+            }
+
+            std::lock_guard<std::mutex> guard(clientsMutex);
+            clients.erase(client->socket.get());
         }
     );
 }
@@ -88,8 +134,8 @@ void Server::writePacket(std::shared_ptr<ConnectedClient> client, const Packet& 
             if (!ec) {
                 readPacket(client);
             } else {
-                onClientDisconnect(client);
-                onDebugInfo(client, "[Server::readPacket] Error occurred: " + ec.message());
+                CALL_HANDLER(onClientDisconnect, client);
+                CALL_HANDLER(onDebugInfo, client, std::format("[Server::readPacket] Error occurred: {}", ec.message()));
 
                 std::lock_guard<std::mutex> guard(clientsMutex);
                 clients.erase(client->socket.get());
@@ -99,13 +145,14 @@ void Server::writePacket(std::shared_ptr<ConnectedClient> client, const Packet& 
 }
 
 void Server::processPacket(std::shared_ptr<ConnectedClient> client, const std::vector<char>& buffer) {
-    std::string packetData(buffer.begin() + 8, buffer.end() - 2);
-    int         id   = utils::Utils::bit32ToInt(buffer);
-    int         type = utils::Utils::typeToInt(buffer);
+    std::string_view packetData(buffer.begin() + 8, buffer.end() - 2);
 
-    onDebugInfo(client, "[Server::processPacket] Packet id: " + std::to_string(id));
-    onDebugInfo(client, "[Server::processPacket] Packet type: " + std::to_string(type));
-    onDebugInfo(client, "[Server::processPacket] Packet data: " + packetData);
+    int id   = utils::Utils::bit32ToInt(buffer);
+    int type = utils::Utils::typeToInt(buffer);
+
+    CALL_HANDLER(onDebugInfo, client, std::format("[Server::processPacket] Packet id: {}", id));
+    CALL_HANDLER(onDebugInfo, client, std::format("[Server::processPacket] Packet type: {}", type));
+    CALL_HANDLER(onDebugInfo, client, std::format("[Server::processPacket] Packet data: {}", packetData));
 
     Packet packet;
 
@@ -114,23 +161,26 @@ void Server::processPacket(std::shared_ptr<ConnectedClient> client, const std::v
             packet = utils::Utils::compilePacket(id, DataType::SERVERDATA_AUTH_RESPONSE, "");
 
             client->isAuthenticated = true;
-            onClientAuth(client);
+            CALL_HANDLER(onClientAuth, client);
         } else {
             packet = utils::Utils::compilePacket(-1, DataType::SERVERDATA_AUTH_RESPONSE, "");
         }
     } else {
         if (type != DataType::SERVERDATA_EXECCOMMAND) {
-            onDebugInfo(client, "[Server::processPacket] Invalid Packet type (" + std::to_string(type) + ").");
+            CALL_HANDLER(onDebugInfo, client, std::format("[Server::processPacket] Invalid packet type ({})", type));
 
             packet = utils::Utils::compilePacket(
                 id,
                 DataType::SERVERDATA_RESPONSE_VALUE,
-                "Invalid packet type (" + std::to_string(type) + "). Double check your packets."
+                std::format("Invalid packet type ({}). Double check your packets.", type)
             );
         } else {
-            std::string data = onCommand(client, packetData);
-            onDebugInfo(client, "[Server::processPacket] New Packet data: " + data);
+            std::string data = "";
+            if (onCommand) {
+                data = onCommand(client, packetData);
+            }
 
+            CALL_HANDLER(onDebugInfo, client, std::format("[Server::processPacket] Answer for client: {}", data));
             packet = utils::Utils::compilePacket(id, DataType::SERVERDATA_RESPONSE_VALUE, data);
         }
     }

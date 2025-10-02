@@ -19,7 +19,7 @@ private:
     static void        onNewConnection(const std::shared_ptr<rcon::ConnectedClient> client);
     static void        onClientAuth(const std::shared_ptr<rcon::ConnectedClient> client);
     static void        onClientDisconnect(const std::shared_ptr<rcon::ConnectedClient> client);
-    static std::string onCommand(const std::shared_ptr<rcon::ConnectedClient> client, const std::string& command);
+    static std::string onCommand(const std::shared_ptr<rcon::ConnectedClient> client, std::string_view command);
     static void        onDebugInfo(const std::shared_ptr<rcon::ConnectedClient> client, const std::string& debugInfo);
 };
 
